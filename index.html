@@ -3,7 +3,334 @@
 <head>
     <meta charset="UTF-8">
     <title>Simple Live (Pro Max)</title>
+    <meta name="referrer" content="no-refe<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Simple Live (Pro Max)</title>
     <meta name="referrer" content="no-referrer">
+    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+    <script src="hls.min.js"></script>
+    <script src="mpegts.min.js"></script>
+    <style>
+        /* 全局暗黑主题 */
+        body { margin: 0; padding: 0; font-family: 'Segoe UI', sans-serif; background: #1a1a1a; color: #eee; height: 100vh; display: flex; flex-direction: column; }
+        
+        /* 顶部标题栏 */
+        header { background: #252525; padding: 15px 20px; display: flex; align-items: center; border-bottom: 1px solid #333; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
+        h1 { margin: 0; font-size: 18px; color: #00d2ff; letter-spacing: 1px; font-weight: 600; }
+        
+        /* 主布局 */
+        .main-layout { display: flex; flex: 1; overflow: hidden; }
+        
+        /* 左侧：播放器与控制区 */
+        .player-section { flex: 3; display: flex; flex-direction: column; padding: 20px; border-right: 1px solid #333; min-width: 0; }
+        
+        /* 输入控件组 */
+        .input-group { display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; }
+        input { flex: 1; padding: 10px 15px; background: #333; border: 1px solid #444; color: white; border-radius: 4px; outline: none; transition: 0.3s; min-width: 200px; }
+        input:focus { border-color: #00d2ff; background: #3a3a3a; }
+        
+        /* 按钮样式 */
+        button { padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; transition: 0.2s; white-space: nowrap; }
+        .btn-play { background: #00d2ff; color: #000; }
+        .btn-play:hover { background: #00b8e0; transform: translateY(-1px); }
+        .btn-save { background: #ff4757; color: white; }
+        .btn-save:hover { background: #ff6b81; transform: translateY(-1px); }
+        
+        /* 清晰度下拉框 */
+        #qualitySelect { display: none; padding: 0 15px; background: #333; color: #00d2ff; border: 1px solid #00d2ff; border-radius: 4px; outline: none; cursor: pointer; height: 38px; }
+        
+        /* 视频容器 */
+        #video-container { flex: 1; background: black; border-radius: 8px; overflow: hidden; position: relative; min-height: 400px; box-shadow: 0 5px 15px rgba(0,0,0,0.3); }
+        video { width: 100%; height: 100%; display: block; object-fit: contain; }
+        
+        /* 日志条 */
+        #logs { height: 30px; line-height: 30px; font-size: 12px; color: #888; margin-top: 5px; font-family: monospace; }
+        
+        /* 右侧：侧边栏 */
+        .sidebar { flex: 1; background: #202020; display: flex; flex-direction: column; min-width: 320px; max-width: 400px; }
+        .sidebar-header { padding: 15px; font-weight: bold; border-bottom: 1px solid #333; background: #252525; display: flex; justify-content: space-between; align-items: center; }
+        .room-list { flex: 1; overflow-y: auto; padding: 10px; scrollbar-width: thin; scrollbar-color: #444 #202020; }
+        
+        /* 直播间卡片 */
+        .room-card { background: #2a2a2a; padding: 12px; margin-bottom: 10px; border-radius: 6px; cursor: pointer; transition: 0.2s; display: flex; align-items: center; gap: 12px; border-left: 3px solid transparent; position: relative; }
+        .room-card:hover { background: #333; transform: translateX(2px); }
+        
+        /* 状态点 */
+        .status-dot { width: 10px; height: 10px; border-radius: 50%; background-color: #444; transition: 0.3s; flex-shrink: 0; }
+        .status-online { background-color: #00ff00; box-shadow: 0 0 8px #00ff00; }
+        
+        /* 卡片文字信息 */
+        .room-info { flex: 1; overflow: hidden; }
+        .room-name { font-weight: bold; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; }
+        .room-url { font-size: 12px; color: #666; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        
+        /* 删除按钮 */
+        .btn-delete { background: transparent; color: #555; font-size: 18px; padding: 5px; width: 30px; text-align: center; }
+        .btn-delete:hover { color: #ff4757; background: rgba(255, 71, 87, 0.1); }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>📺 Simple Live <span style="font-size:12px; color:#666; font-weight:normal;">(Pro Max)</span></h1>
+</header>
+
+<div class="main-layout">
+    <div class="player-section">
+        <div class="input-group">
+            <input type="text" id="roomUrl" placeholder="粘贴直播间链接 (抖音/B站/虎牙...)" value="">
+            <input type="text" id="roomName" placeholder="给它起个名字" style="flex: 0.5;">
+            
+            <select id="qualitySelect" onchange="changeQuality()"></select>
+
+            <button class="btn-play" onclick="startPlay()">播放</button>
+            <button class="btn-save" onclick="saveRoom()">❤ 存到云端</button>
+        </div>
+        
+        <div id="video-container">
+            <video id="videoElement" controls autoplay muted></video>
+        </div>
+        <div id="logs">准备就绪，请添加直播间...</div>
+    </div>
+
+    <div class="sidebar">
+        <div class="sidebar-header">
+            <span>我的收藏</span>
+            <span id="loading-status" style="font-size:12px; font-weight:normal; color:#888;"></span>
+        </div>
+        <div class="room-list" id="roomList">
+            <div style="padding:20px; text-align:center; color:#666;">正在连接云端数据库...</div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // ==========================================
+    // ✅ 已填入你的配置
+    // ==========================================
+    const SUPABASE_URL = 'https://cqhvdujppknngygogawj.supabase.co'; 
+    // 注意：你提供的 Key 格式比较短，如果连接失败，请去后台确认是否是 anon/public key (通常以 eyJ 开头)
+    const SUPABASE_KEY = 'sb_publishable__Yv1H0eUEP5E6xwGFXGptQ_ezuZi4yF';
+    // ==========================================
+
+    // 初始化 Supabase
+    const { createClient } = supabase;
+    const db = createClient(SUPABASE_URL, SUPABASE_KEY);
+    
+    // 全局变量
+    var flvPlayer = null;
+    var hlsPlayer = null;
+    var currentQualities = {}; // 存储当前直播间的所有画质
+
+    // 页面加载完成后执行
+    window.onload = function() {
+        fetchFavorites();
+    };
+
+    function log(msg) { document.getElementById('logs').innerText = msg; }
+
+    // --- 1. 核心：播放逻辑 (带画质选择) ---
+    async function startPlay(urlFromList) {
+        const inputUrl = urlFromList || document.getElementById('roomUrl').value;
+        if (!inputUrl) return alert('请输入地址');
+        if(urlFromList) document.getElementById('roomUrl').value = inputUrl;
+
+        // UI 重置
+        document.getElementById('qualitySelect').style.display = 'none';
+        log("⏳ 正在请求后端解析...");
+
+        try {
+            // 请求后端
+            const res = await fetch(`https://live-api-m63c.onrender.com/api/play?url=${encodeURIComponent(inputUrl)}`);
+            const data = await res.json();
+
+            if (data.status === 'error') {
+                log("❌ " + data.message);
+                return;
+            }
+            
+            // 成功：保存画质列表
+            currentQualities = data.qualities;
+            
+            // 生成下拉菜单
+            const select = document.getElementById('qualitySelect');
+            select.innerHTML = ''; 
+            for (let q in currentQualities) {
+                let option = document.createElement('option');
+                option.value = q;
+                option.innerText = q; // 显示 best, 720p, source 等
+                select.appendChild(option);
+            }
+            
+            // 选中默认画质并显示下拉框
+            select.value = data.default_quality;
+            if (Object.keys(currentQualities).length > 1) {
+                select.style.display = 'block';
+            }
+
+            // 加载视频
+            log("✅ 解析成功，正在缓冲: " + data.default_quality);
+            loadVideo(currentQualities[data.default_quality]);
+
+        } catch (e) {
+            log("❌ 网络或后端错误: " + e.message);
+        }
+    }
+
+    // --- 2. 切换画质 ---
+    function changeQuality() {
+        const select = document.getElementById('qualitySelect');
+        const qualityName = select.value;
+        const newUrl = currentQualities[qualityName];
+        log("🔄 切换画质为: " + qualityName);
+        loadVideo(newUrl);
+    }
+
+    // --- 3. 视频加载器 (FLV/HLS 判断) ---
+    function loadVideo(realUrl) {
+        const videoElement = document.getElementById('videoElement');
+
+        if (flvPlayer) { flvPlayer.destroy(); flvPlayer = null; }
+        if (hlsPlayer) { hlsPlayer.destroy(); hlsPlayer = null; }
+
+        if (realUrl.includes('.flv')) {
+            if (mpegts.getFeatureList().mseLivePlayback) {
+                flvPlayer = mpegts.createPlayer({ type: 'flv', isLive: true, url: realUrl });
+                flvPlayer.attachMediaElement(videoElement);
+                flvPlayer.load();
+                flvPlayer.play().catch(e => log("⚠️ 自动播放被拦截，请手动点击播放"));
+            }
+        } else if (realUrl.includes('.m3u8')) {
+            if (Hls.isSupported()) {
+                hlsPlayer = new Hls();
+                hlsPlayer.loadSource(realUrl);
+                hlsPlayer.attachMedia(videoElement);
+                hlsPlayer.on(Hls.Events.MANIFEST_PARSED, function() { videoElement.play(); });
+            } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
+                videoElement.src = realUrl;
+                videoElement.play();
+            }
+        } else {
+            videoElement.src = realUrl;
+            videoElement.play();
+        }
+    }
+
+    // --- 4. 数据库：拉取列表 ---
+    async function fetchFavorites() {
+        log("☁️ 同步云端数据中...");
+        const { data, error } = await db
+            .from('favorites')
+            .select('*')
+            .order('created_at', { ascending: false });
+
+        if (error) {
+            log("❌ 连接 Supabase 失败: " + error.message);
+            // 提示 Key 可能填错
+            if(error.code === '401' || error.message.includes("JWT")) {
+                alert("Supabase Key 似乎无效！请检查是否复制了 anon/public key。");
+            }
+        } else {
+            log("✅ 同步完成");
+            renderList(data);
+            checkAllStatus(data); // 开始查岗
+        }
+    }
+
+    // --- 5. 状态检测 (开播亮绿灯) ---
+    async function checkAllStatus(items) {
+        const statusLabel = document.getElementById('loading-status');
+        statusLabel.innerText = "(正在刷新开播状态...)";
+
+        // 并行检测，不卡顿
+        for (let item of items) {
+            checkOneRoom(item);
+        }
+    }
+
+    async function checkOneRoom(item) {
+        try {
+            const res = await fetch(`http://localhost:8000/api/check?url=${encodeURIComponent(item.url)}`);
+            const data = await res.json();
+            
+            // 如果开播了
+            if (data.is_live === true) {
+                const dot = document.getElementById(`dot-${item.id}`);
+                const card = document.getElementById(`card-${item.id}`);
+                const list = document.getElementById('roomList');
+
+                if(dot && card) {
+                    dot.classList.add('status-online'); // 亮绿灯
+                    dot.title = "直播中";
+                    // 移到顶部
+                    list.removeChild(card);
+                    list.prepend(card);
+                }
+            }
+        } catch (e) {
+            // 检测失败不做处理，保持灰色
+        } finally {
+            document.getElementById('loading-status').innerText = "";
+        }
+    }
+
+    // --- 6. 渲染列表 UI ---
+    function renderList(favorites) {
+        const listDiv = document.getElementById('roomList');
+        listDiv.innerHTML = ''; 
+
+        if (!favorites || favorites.length === 0) {
+            listDiv.innerHTML = '<div style="padding:20px; text-align:center; color:#666;">这里空空如也，快去收藏一个吧！</div>';
+            return;
+        }
+
+        favorites.forEach(item => {
+            const div = document.createElement('div');
+            div.className = 'room-card';
+            div.id = `card-${item.id}`;
+            div.onclick = function() { startPlay(item.url); };
+            
+            div.innerHTML = `
+                <div class="status-dot" id="dot-${item.id}" title="未开播/检测中"></div>
+                <div class="room-info">
+                    <div class="room-name">${item.name}</div>
+                    <div class="room-url">${item.url}</div>
+                </div>
+                <button class="btn-delete" onclick="event.stopPropagation(); deleteRoom(${item.id})">✖</button>
+            `;
+            listDiv.appendChild(div);
+        });
+    }
+
+    // --- 7. 数据库：增删逻辑 ---
+    async function saveRoom() {
+        const url = document.getElementById('roomUrl').value;
+        let name = document.getElementById('roomName').value;
+        if (!url) return alert("请输入直播链接");
+        if (!name) name = "未命名直播间";
+
+        log("☁️ 正在保存...");
+        const { error } = await db.from('favorites').insert({ name: name, url: url });
+
+        if (error) {
+            alert("保存失败: " + error.message);
+        } else {
+            document.getElementById('roomName').value = '';
+            fetchFavorites(); // 刷新列表
+        }
+    }
+
+    async function deleteRoom(id) {
+        if(confirm("确定要移除这个收藏吗？")) {
+            await db.from('favorites').delete().eq('id', id);
+            fetchFavorites();
+        }
+    }
+</script>
+</body>
+</html>rrer">
     <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
     <script src="hls.min.js"></script>
     <script src="mpegts.min.js"></script>
@@ -325,4 +652,5 @@
     }
 </script>
 </body>
+
 </html>
