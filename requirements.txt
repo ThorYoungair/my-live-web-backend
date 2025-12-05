@@ -4,3 +4,4 @@ streamlink
 aiohttp
 bilibili-api-python
 requests
+protobuf
