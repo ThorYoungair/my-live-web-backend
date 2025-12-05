@@ -1,3 +1,6 @@
 fastapi
 uvicorn[standard]
 streamlink
+aiohttp
+bilibili-api-python
+requests
