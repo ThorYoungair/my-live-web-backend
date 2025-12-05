@@ -3,7 +3,7 @@ import uvicorn
 import json
 import asyncio
 import re
-import aiohttp
+import aiohttp # 用于抖音 WS 连接
 import uuid
 import time
 from typing import Optional
@@ -20,7 +20,6 @@ try:
 except ImportError:
     print("❌ douyin_pb2.py 未找到，抖音弹幕功能将无法工作。")
     class PlaceholderPB:
-        # 定义必要的占位类和方法，以防 main.py 启动时失败
         class Request:
             def SerializeToString(self): return b''
         class Response:
@@ -52,7 +51,6 @@ except ImportError:
                          nickname = ''
                     content = ''
                     user = User()
-
     douyin_pb2 = PlaceholderPB()
     
 
@@ -62,6 +60,15 @@ except ImportError:
 SESSDATA = "0d5ceb32%2C1779919308%2Ca276a%2Ab1CjCr1DByEwubcFGNC3jSZC18fEm4MgMO-3b2yE5CSquh_pZ8_jQ8esjl1MaTj_W59QUSVndxRkpSUEE5TjVDOXU0ZkJXamtrUnBlalNhTm5zZ0RBQm5zWXBJTm94SFpkQzU4bmg2Z21fbFJ6Z1RHRVBSSndmckI2WTZlOHY3M096YWhXVlJocVN3IIEC"
 from bilibili_api import live, Credential
 CREDENTIAL = Credential(sessdata=SESSDATA)
+
+# 🎯 修复: 通用 Headers 集合，增强 Streamlink 的多平台解析能力 (视频解析修正)
+COMMON_HEADERS = {
+    # 使用强大的 User-Agent 模拟浏览器
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept-Encoding': 'gzip, deflate, br',
+    # 保持 B站 SESSDATA，帮助 Streamlink 识别 B站流
+    'Cookie': f'SESSDATA={SESSDATA}'
+}
 
 
 # ==========================================
@@ -111,15 +118,17 @@ app.add_middleware(
 @app.get("/")
 def read_root(): return {"status": "running"}
 
-# --- 视频解析 (已恢复为用户提供的原逻辑) ---
+# --- 视频解析 (已修复为通用 Headers) ---
 import streamlink
 @app.get("/api/play")
 def get_stream(url: str):
     try:
         clean_url = url.split('?')[0]
         session = streamlink.Streamlink()
-        # 恢复为用户提供的原逻辑，保证本地测试和 B站视频的兼容性
-        session.set_option("http-headers", {'Cookie': f'SESSDATA={SESSDATA}'})
+        
+        # 🎯 修复: 使用通用且强大的 Headers 集合
+        session.set_option("http-headers", COMMON_HEADERS)
+        
         streams = session.streams(clean_url)
         if not streams: return {"status": "error", "message": "未找到流"}
         
@@ -139,14 +148,16 @@ def check_status(url: str):
     try: 
         clean_url = url.split('?')[0]
         session = streamlink.Streamlink()
-        # 恢复为用户提供的原逻辑
-        session.set_option("http-headers", {'Cookie': f'SESSDATA={SESSDATA}'})
+        
+        # 🎯 修复: 使用通用且强大的 Headers 集合
+        session.set_option("http-headers", COMMON_HEADERS)
+        
         return {"is_live": bool(session.streams(clean_url))}
     except: return {"is_live": False}
 
 
 # ==========================================
-# ⬇️ B站弹幕代理 (最终修正: 仅内容, 兼容前端)
+# ⬇️ B站弹幕代理 (已恢复并修正兼容性)
 # ==========================================
 
 async def start_bilibili_room(room_id, websocket: WebSocket):
@@ -158,14 +169,15 @@ async def start_bilibili_room(room_id, websocket: WebSocket):
     async def on_danmaku(event):
         try:
             content = event['data']['info'][1]
+            user_name = event['data']['info'][2][1] # 提取用户名
             print(f"💬 {content}")
             
-            # ✅ 最终修正: 转发内容只包含 text，将 user 设为空字符串以保留键名和兼容性
+            # ✅ 恢复用户原始逻辑，并确保兼容性: 转发 content 和 user_name
+            # 注意: 我移除了平台字段，因为您的原始工作代码中没有它。
             await websocket.send_text(json.dumps({
                 "type": "danmaku",
                 "text": content,
-                "user": "", # 保证前端弹幕库的兼容性 (不显示用户名)
-                "platform": "bilibili" # 保持架构兼容性
+                "user": user_name # 恢复用户名
             }))
         except:
             raise WebSocketDisconnect()
@@ -175,9 +187,15 @@ async def start_bilibili_room(room_id, websocket: WebSocket):
 
     try:
         while True:
-            await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+            except asyncio.TimeoutError:
+                if connect_task.done():
+                    print("❌ B站连接意外断开")
+                    break
+            
             if connect_task.done() and connect_task.exception():
-                print(f"❌ B站连接意外断开")
+                print(f"❌ B站任务异常: {connect_task.exception()}")
                 break
 
     except WebSocketDisconnect:
