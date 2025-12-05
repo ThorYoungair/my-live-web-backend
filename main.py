@@ -10,18 +10,18 @@ from typing import Optional
 import zlib
 import struct 
 
-# 🚨 必须添加此行，解决 NameError: name 'FastAPI'/'CORSMiddleware' is not defined
+# 🚨 解决 NameError: 必须导入 FastAPI 和 CORSMiddleware
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware 
 
 # ⚠️ 导入 ProtoBuf 模块 (占位符，假设已生成 douyin_pb2.py)
 try:
-    # 如果您已编译并上传 douyin_pb2.py，Render 会使用这个导入
+    # 这是您本地编译生成的模块，Render 部署时需要它
     import douyin_pb2 
 except ImportError:
     print("❌ douyin_pb2.py 未找到，抖音弹幕功能将无法工作。")
     class PlaceholderPB:
-        # 定义必要的占位类和方法，以防 main.py 启动失败
+        # 定义必要的占位类和方法，以防 main.py 启动时失败
         class Request:
             def SerializeToString(self): return b''
         class Response:
@@ -34,7 +34,6 @@ except ImportError:
             def payload(self): return b''
         class Webcast:
             class Im:
-                # 简化 PushFrame 占位
                 class PushFrame:
                     SeqID = 0
                     LogID = "N/A"
@@ -64,6 +63,15 @@ except ImportError:
 SESSDATA = "0d5ceb32%2C1779919308%2Ca276a%2Ab1CjCr1DByEwubcFGNC3jSZC18fEm4MgMO-3b2yE5CSquh_pZ8_jQ8esjl1MaTj_W59QUSVndxRkpSUEE5TjVDOXU0ZkJXamtrUnBlalNhTm5zZ0RBQm5zWXBJTm94SFpkQzU4bmg2Z21fbFJ6Z1RHRVBSSndmckI2WTZlOHY3M096YWhXVlJocVN3IIEC"
 from bilibili_api import live, Credential
 CREDENTIAL = Credential(sessdata=SESSDATA)
+
+# ⬇️ 通用 Headers 集合，增强 Streamlink 的多平台解析能力
+COMMON_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept-Encoding': 'gzip, deflate, br',
+    # 保持 B站 SESSDATA，但添加 User-Agent 帮助抖音解析
+    'Cookie': f'SESSDATA={SESSDATA}'
+}
+
 
 # ==========================================
 # ⬇️ 抖音 ProtoBuf 核心逻辑辅助函数 (已精简)
@@ -113,14 +121,17 @@ app.add_middleware(
 @app.get("/")
 def read_root(): return {"status": "running"}
 
-# --- 视频解析 ---
+# --- 视频解析 (已重写 Headers) ---
 import streamlink
 @app.get("/api/play")
 def get_stream(url: str):
     try:
         clean_url = url.split('?')[0]
         session = streamlink.Streamlink()
-        session.set_option("http-headers", {'Cookie': f'SESSDATA={SESSDATA}'})
+        
+        # 🎯 修复: 使用通用且强大的 Headers 集合
+        session.set_option("http-headers", COMMON_HEADERS)
+        
         streams = session.streams(clean_url)
         if not streams: return {"status": "error", "message": "未找到流"}
         
@@ -140,13 +151,16 @@ def check_status(url: str):
     try: 
         clean_url = url.split('?')[0]
         session = streamlink.Streamlink()
-        session.set_option("http-headers", {'Cookie': f'SESSDATA={SESSDATA}'})
+        
+        # 🎯 修复: 使用通用且强大的 Headers 集合
+        session.set_option("http-headers", COMMON_HEADERS)
+        
         return {"is_live": bool(session.streams(clean_url))}
     except: return {"is_live": False}
 
 
 # ==========================================
-# ⬇️ B站弹幕代理 (已修复: 包含 platform 字段)
+# ⬇️ B站弹幕代理 (最终修正: 仅内容, 包含 platform)
 # ==========================================
 
 async def start_bilibili_room(room_id, websocket: WebSocket):
@@ -158,15 +172,13 @@ async def start_bilibili_room(room_id, websocket: WebSocket):
     async def on_danmaku(event):
         try:
             content = event['data']['info'][1]
-            user_name = event['data']['info'][2][1]
+            # 🎯 B站弹幕：只转发内容，不包含 user 字段
             print(f"💬 {content}")
             
-            # ✅ 修复: 必须包含 platform 字段
             await websocket.send_text(json.dumps({
                 "type": "danmaku",
                 "text": content,
-                "user": user_name,
-                "platform": "bilibili" # 标记平台
+                "platform": "bilibili" # 标记平台，确保前端兼容性
             }))
         except:
             raise WebSocketDisconnect()
@@ -175,15 +187,8 @@ async def start_bilibili_room(room_id, websocket: WebSocket):
     connect_task = asyncio.create_task(room.connect())
 
     try:
-        # 循环监听前端状态
         while True:
-            try:
-                await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
-            except asyncio.TimeoutError:
-                if connect_task.done():
-                    print("❌ B站连接意外断开")
-                    break
-            
+            await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
             if connect_task.done() and connect_task.exception():
                 print(f"❌ B站任务异常: {connect_task.exception()}")
                 break
@@ -232,12 +237,12 @@ async def start_douyin_room(url: str, websocket: WebSocket):
 
     print(f"🚀 [抖音] 正在连接: {room_id}")
 
-    # --- 1. 获取 WebSocket 地址和 Headers ---
+    # --- 1. 获取 WebSocket 地址和 Headers (使用强大的 User-Agent) ---
     DOUYIN_WS_BASE = "wss://webcast-ws-web-lf.douyin.com/ws/room/?compress=lz4&version=1.0.0" 
     DOUYIN_HEADERS = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.75 Safari/537.36',
+        'User-Agent': COMMON_HEADERS['User-Agent'],
         'Referer': f'https://live.douyin.com/{room_id}',
-        'Cookie': 'YOUR_VALID_COOKIE_HERE', # 🚨 必须有效！
+        'Cookie': 'YOUR_VALID_COOKIE_HERE', # 🚨 请在部署前确保使用有效的 Cookie
     }
     
     try:
