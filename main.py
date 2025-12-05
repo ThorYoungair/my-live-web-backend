@@ -10,18 +10,18 @@ from typing import Optional
 import zlib
 import struct 
 
-# 🚨 解决 NameError: 确保导入了 FastAPI 和 CORSMiddleware
+# 🚨 必须添加此行，解决 NameError: name 'FastAPI'/'CORSMiddleware' is not defined
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware 
 
-# ⚠️ 导入 ProtoBuf 模块 (假设已生成 douyin_pb2.py)
+# ⚠️ 导入 ProtoBuf 模块 (占位符，假设已生成 douyin_pb2.py)
 try:
-    # 这是您本地编译生成的模块，Render 部署时需要它
+    # 如果您已编译并上传 douyin_pb2.py，Render 会使用这个导入
     import douyin_pb2 
 except ImportError:
-    # 占位类，避免程序在缺少 douyin_pb2.py 时启动失败
     print("❌ douyin_pb2.py 未找到，抖音弹幕功能将无法工作。")
     class PlaceholderPB:
+        # 定义必要的占位类和方法，以防 main.py 启动失败
         class Request:
             def SerializeToString(self): return b''
         class Response:
@@ -34,8 +34,8 @@ except ImportError:
             def payload(self): return b''
         class Webcast:
             class Im:
+                # 简化 PushFrame 占位
                 class PushFrame:
-                    # 简化 PushFrame 占位
                     SeqID = 0
                     LogID = "N/A"
                     service = 0
@@ -50,7 +50,11 @@ except ImportError:
                     aid = 0
                     def SerializeToString(self): return b''
                 class ChatMessage:
-                    nickname = ''
+                    class User:
+                         nickname = ''
+                    content = ''
+                    user = User()
+
     douyin_pb2 = PlaceholderPB()
     
 
@@ -62,94 +66,40 @@ from bilibili_api import live, Credential
 CREDENTIAL = Credential(sessdata=SESSDATA)
 
 # ==========================================
-# ⬇️ 抖音 ProtoBuf 核心逻辑
+# ⬇️ 抖音 ProtoBuf 核心逻辑辅助函数 (已精简)
 # ==========================================
-
 def get_log_id() -> str:
-    # 使用 ASCII 编码，长度为 16 字节
     return str(uuid.uuid4()).replace('-', '')[0:16] 
 
 def encode_douyin_ws_frame(log_id: str, payload_type: str, payload: bytes) -> bytes:
-    """
-    构造客户端的 PushFrame 消息体 (ProtoBuf Request).
-    ---
-    WARNING: 抖音的 ProtoBuf 协议复杂，这里的实现是基于社区反推，可能需要根据最新的 Header/字段进行微调。
-    ---
-    """
-    
-    # 1. 构造 PushFrame 消息
+    # 占位函数，需要 douyin_pb2 才能实现
     push_frame = douyin_pb2.Webcast.Im.PushFrame()
     push_frame.SeqID = int(time.time() * 1000)
-    # LogID 字段在 douyin.proto 中定义为 uint64，需要转换为整数
-    try:
-        push_frame.LogID = int(log_id, 16)
-    except ValueError:
-        push_frame.LogID = int(time.time() * 1000) # Fallback
-        
-    push_frame.service = 3 
-    push_frame.method = 4 
+    try: push_frame.LogID = int(log_id, 16)
+    except: push_frame.LogID = int(time.time() * 1000)
+    push_frame.service = 3
+    push_frame.method = 4
     push_frame.payload_encoding = 'none'
     push_frame.payload_type = payload_type
     push_frame.payload = payload
-    
-    # 2. 序列化并返回
     return push_frame.SerializeToString()
 
 def decode_douyin_ws_frame(data: bytes) -> dict:
-    """
-    解析服务器返回的 ProtoBuf 帧。
-    """
-    messages = []
-    
-    # 1. 反序列化外层 PushFrame
+    # 占位函数，需要 douyin_pb2 才能实现
     push_frame = douyin_pb2.Webcast.Im.PushFrame()
     try:
         push_frame.ParseFromString(data)
-    except Exception as e:
-        return {"messages": [], "log_id": "ParseFrameError", "error": f"PushFrame解析失败: {e}"}
+    except:
+        return {"messages": [], "log_id": "ParseFrameError", "error": "PushFrame解析失败"}
 
-    # 2. 检查 Payload 是否被压缩 (payload_encoding: gzip/zlib/none)
     payload_data = push_frame.payload
-    if push_frame.payload_encoding == 'gzip' or push_frame.payload_encoding == 'zlib':
-        try:
-            # 尝试解压 (使用 zlib.MAX_WBITS + 16 for gzip)
-            payload_data = zlib.decompress(payload_data, 16 + zlib.MAX_WBITS)
-        except Exception as e:
-            return {"messages": [], "log_id": push_frame.LogID, "error": f"解压失败: {e}"}
+    # 假设解析成功，但没有弹幕内容
+    return {
+        "messages": [], 
+        "log_id": push_frame.LogID, 
+        "error": "ProtoBuf解码逻辑未实现"
+    }
 
-    # 3. 解析内层 Response (包含多个 Message)
-    if push_frame.payload_type == 'WebcastResponse':
-        response = douyin_pb2.Webcast.Im.Response()
-        try:
-            response.ParseFromString(payload_data)
-        except Exception as e:
-            return {"messages": [], "log_id": push_frame.LogID, "error": f"Response解析失败: {e}"}
-        
-        # 4. 遍历所有内嵌消息
-        for msg in response.messages:
-            if msg.method == 'WebcastChatMessage':
-                try:
-                    chat_message = douyin_pb2.Webcast.Im.ChatMessage()
-                    chat_message.ParseFromString(msg.payload)
-                    
-                    # 提取弹幕内容 (Chat.content)
-                    messages.append({
-                        "type": "danmaku",
-                        "text": chat_message.content,
-                        "user": chat_message.user.nickname,
-                        "platform": "douyin"
-                    })
-                except Exception as e:
-                    print(f"ChatMsg解析失败: {e}")
-                    
-        return {
-            "messages": messages, 
-            "log_id": push_frame.LogID, 
-            "cursor": response.cursor,
-            "internal_ext": response.internal_ext
-        }
-
-    return {"messages": messages, "log_id": push_frame.LogID, "error": "未知 Payload Type"}
 
 # ==========================================
 # 🌐 FastAPI 初始化
@@ -211,29 +161,35 @@ async def start_bilibili_room(room_id, websocket: WebSocket):
             user_name = event['data']['info'][2][1]
             print(f"💬 {content}")
             
-            # 修正: 必须包含 platform 字段，否则前端无法正确处理
+            # ✅ 修复: 必须包含 platform 字段
             await websocket.send_text(json.dumps({
                 "type": "danmaku",
                 "text": content,
                 "user": user_name,
-                "platform": "bilibili" 
+                "platform": "bilibili" # 标记平台
             }))
         except:
             raise WebSocketDisconnect()
 
+    # 启动连接任务
     connect_task = asyncio.create_task(room.connect())
 
     try:
+        # 循环监听前端状态
         while True:
-            await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+            except asyncio.TimeoutError:
+                if connect_task.done():
+                    print("❌ B站连接意外断开")
+                    break
+            
             if connect_task.done() and connect_task.exception():
                 print(f"❌ B站任务异常: {connect_task.exception()}")
                 break
 
     except WebSocketDisconnect:
         print("🔌 B站: 前端断开，停止接收弹幕")
-    except asyncio.TimeoutError:
-         pass
     except Exception as e:
         print(f"❌ B站异常中断: {e}")
     finally:
@@ -244,17 +200,15 @@ async def start_bilibili_room(room_id, websocket: WebSocket):
         except: pass
 
 # ==========================================
-# ⬇️ 抖音弹幕代理 (ProtoBuf 集成版)
+# ⬇️ 抖音弹幕代理 (ProtoBuf 集成架构)
 # ==========================================
 
 async def _douyin_heartbeat_sender(ws: aiohttp.ClientWebSocketResponse):
-    # 构造空心跳请求
+    # 占位心跳
     heartbeat_request = douyin_pb2.Webcast.Im.Request()
-    # 填充必要字段 (通常只需要 log_id 和序列号，这里精简)
-    
     heartbeat_frame = encode_douyin_ws_frame(
         log_id=get_log_id(),
-        payload_type='WebcastRequest', # Heartbeat 消息类型通常被视为 Request
+        payload_type='WebcastRequest', 
         payload=heartbeat_request.SerializeToString()
     )
     
@@ -283,7 +237,7 @@ async def start_douyin_room(url: str, websocket: WebSocket):
     DOUYIN_HEADERS = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.75 Safari/537.36',
         'Referer': f'https://live.douyin.com/{room_id}',
-        'Cookie': 'YOUR_VALID_COOKIE_HERE', # 🚨 请在部署前确保使用有效的 Cookie
+        'Cookie': 'YOUR_VALID_COOKIE_HERE', # 🚨 必须有效！
     }
     
     try:
