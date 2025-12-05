@@ -10,18 +10,17 @@ from typing import Optional
 import zlib
 import struct 
 
-# 🚨 解决 NameError: 必须导入 FastAPI 和 CORSMiddleware
+# 🚨 解决 NameError: 确保导入了 FastAPI 和 CORSMiddleware
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware 
 
 # ⚠️ 导入 ProtoBuf 模块 (占位符，假设已生成 douyin_pb2.py)
 try:
-    # 这是您本地编译生成的模块，Render 部署时需要它
+    # 您的 douyin_pb2 模块
     import douyin_pb2 
 except ImportError:
     print("❌ douyin_pb2.py 未找到，抖音弹幕功能将无法工作。")
     class PlaceholderPB:
-        # 定义必要的占位类和方法，以防 main.py 启动时失败
         class Request:
             def SerializeToString(self): return b''
         class Response:
@@ -64,23 +63,13 @@ SESSDATA = "0d5ceb32%2C1779919308%2Ca276a%2Ab1CjCr1DByEwubcFGNC3jSZC18fEm4MgMO-3
 from bilibili_api import live, Credential
 CREDENTIAL = Credential(sessdata=SESSDATA)
 
-# ⬇️ 通用 Headers 集合，增强 Streamlink 的多平台解析能力
-COMMON_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept-Encoding': 'gzip, deflate, br',
-    # 保持 B站 SESSDATA，但添加 User-Agent 帮助抖音解析
-    'Cookie': f'SESSDATA={SESSDATA}'
-}
-
-
 # ==========================================
-# ⬇️ 抖音 ProtoBuf 核心逻辑辅助函数 (已精简)
+# ⬇️ 抖音 ProtoBuf 核心逻辑辅助函数 (仅占位)
 # ==========================================
 def get_log_id() -> str:
     return str(uuid.uuid4()).replace('-', '')[0:16] 
 
 def encode_douyin_ws_frame(log_id: str, payload_type: str, payload: bytes) -> bytes:
-    # 占位函数，需要 douyin_pb2 才能实现
     push_frame = douyin_pb2.Webcast.Im.PushFrame()
     push_frame.SeqID = int(time.time() * 1000)
     try: push_frame.LogID = int(log_id, 16)
@@ -93,7 +82,6 @@ def encode_douyin_ws_frame(log_id: str, payload_type: str, payload: bytes) -> by
     return push_frame.SerializeToString()
 
 def decode_douyin_ws_frame(data: bytes) -> dict:
-    # 占位函数，需要 douyin_pb2 才能实现
     push_frame = douyin_pb2.Webcast.Im.PushFrame()
     try:
         push_frame.ParseFromString(data)
@@ -101,7 +89,6 @@ def decode_douyin_ws_frame(data: bytes) -> dict:
         return {"messages": [], "log_id": "ParseFrameError", "error": "PushFrame解析失败"}
 
     payload_data = push_frame.payload
-    # 假设解析成功，但没有弹幕内容
     return {
         "messages": [], 
         "log_id": push_frame.LogID, 
@@ -121,23 +108,22 @@ app.add_middleware(
 @app.get("/")
 def read_root(): return {"status": "running"}
 
-# --- 视频解析 (已重写 Headers) ---
+# --- 视频解析 (已替换为您提供的代码) ---
 import streamlink
 @app.get("/api/play")
 def get_stream(url: str):
     try:
         clean_url = url.split('?')[0]
         session = streamlink.Streamlink()
-        
-        # 🎯 修复: 使用通用且强大的 Headers 集合
-        session.set_option("http-headers", COMMON_HEADERS)
-        
+        # Streamlink 使用 SESSDATA 解决 B站的登录限制 (用户原逻辑)
+        session.set_option("http-headers", {'Cookie': f'SESSDATA={SESSDATA}'})
         streams = session.streams(clean_url)
         if not streams: return {"status": "error", "message": "未找到流"}
         
         quality_map = {}
         for q, s in streams.items():
             try:
+                # 尝试获取 Streamlink 解析出的真实 URL (用户原逻辑)
                 if hasattr(s, 'url'): quality_map[q] = s.url
                 elif hasattr(s, 'to_url'): quality_map[q] = s.to_url()
             except: continue
@@ -151,16 +137,15 @@ def check_status(url: str):
     try: 
         clean_url = url.split('?')[0]
         session = streamlink.Streamlink()
-        
-        # 🎯 修复: 使用通用且强大的 Headers 集合
-        session.set_option("http-headers", COMMON_HEADERS)
-        
+        # Streamlink 使用 SESSDATA 解决 B站的登录限制 (用户原逻辑)
+        session.set_option("http-headers", {'Cookie': f'SESSDATA={SESSDATA}'})
+        # 尝试获取 streams 列表，如果能获取到则认为开播 (用户原逻辑)
         return {"is_live": bool(session.streams(clean_url))}
     except: return {"is_live": False}
 
 
 # ==========================================
-# ⬇️ B站弹幕代理 (最终修正: 仅内容, 包含 platform)
+# ⬇️ B站弹幕代理 (最终修正: 仅内容, 兼容前端)
 # ==========================================
 
 async def start_bilibili_room(room_id, websocket: WebSocket):
@@ -172,13 +157,14 @@ async def start_bilibili_room(room_id, websocket: WebSocket):
     async def on_danmaku(event):
         try:
             content = event['data']['info'][1]
-            # 🎯 B站弹幕：只转发内容，不包含 user 字段
             print(f"💬 {content}")
             
+            # ✅ 最终修正: 仅转发内容 (text)，保留 user 键(空)和 platform 键
             await websocket.send_text(json.dumps({
                 "type": "danmaku",
                 "text": content,
-                "platform": "bilibili" # 标记平台，确保前端兼容性
+                "user": "", # 保持 user 键的兼容性
+                "platform": "bilibili" 
             }))
         except:
             raise WebSocketDisconnect()
@@ -190,7 +176,7 @@ async def start_bilibili_room(room_id, websocket: WebSocket):
         while True:
             await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
             if connect_task.done() and connect_task.exception():
-                print(f"❌ B站任务异常: {connect_task.exception()}")
+                print(f"❌ B站连接意外断开")
                 break
 
     except WebSocketDisconnect:
@@ -237,10 +223,10 @@ async def start_douyin_room(url: str, websocket: WebSocket):
 
     print(f"🚀 [抖音] 正在连接: {room_id}")
 
-    # --- 1. 获取 WebSocket 地址和 Headers (使用强大的 User-Agent) ---
+    # --- 1. 获取 WebSocket 地址和 Headers ---
     DOUYIN_WS_BASE = "wss://webcast-ws-web-lf.douyin.com/ws/room/?compress=lz4&version=1.0.0" 
     DOUYIN_HEADERS = {
-        'User-Agent': COMMON_HEADERS['User-Agent'],
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.75 Safari/537.36',
         'Referer': f'https://live.douyin.com/{room_id}',
         'Cookie': 'YOUR_VALID_COOKIE_HERE', # 🚨 请在部署前确保使用有效的 Cookie
     }
