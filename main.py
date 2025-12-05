@@ -10,6 +10,7 @@ from typing import Optional
 import zlib
 import struct # 用于处理小端序/大端序的字节
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 
 # ==========================================
 # ⚠️ 导入 ProtoBuf 模块 (假设已生成 douyin_pb2.py)
@@ -378,4 +379,5 @@ async def ws_endpoint(websocket: WebSocket, url: str):
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
 
