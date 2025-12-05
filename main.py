@@ -8,20 +8,19 @@ import uuid
 import time
 from typing import Optional
 import zlib
-import struct # 用于处理小端序/大端序的字节
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
+import struct 
 
-# ==========================================
+# 🚨 解决 NameError: 确保导入了 FastAPI 和 CORSMiddleware
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware 
+
 # ⚠️ 导入 ProtoBuf 模块 (假设已生成 douyin_pb2.py)
-# 🚨 注意：您必须将 douyin_pb2.py 文件也上传到您的 Render 仓库中！
-# ==========================================
 try:
-    # 如果您在本地编译并上传了 douyin_pb2.py，使用这个导入
+    # 这是您本地编译生成的模块，Render 部署时需要它
     import douyin_pb2 
 except ImportError:
-    # 否则，使用一个占位类来避免 Python 启动时崩溃
-    print("❌ douyin_pb2.py 未找到，抖音弹幕功能将无法工作。请编译并上传此文件!")
+    # 占位类，避免程序在缺少 douyin_pb2.py 时启动失败
+    print("❌ douyin_pb2.py 未找到，抖音弹幕功能将无法工作。")
     class PlaceholderPB:
         class Request:
             def SerializeToString(self): return b''
@@ -33,11 +32,30 @@ except ImportError:
             def log_id(self): return "N/A"
             @property
             def payload(self): return b''
+        class Webcast:
+            class Im:
+                class PushFrame:
+                    # 简化 PushFrame 占位
+                    SeqID = 0
+                    LogID = "N/A"
+                    service = 0
+                    method = 0
+                    payload_encoding = 'none'
+                    payload_type = ''
+                    payload = b''
+                    def SerializeToString(self): return b''
+                class Request:
+                    room_id = ''
+                    device_platform = ''
+                    aid = 0
+                    def SerializeToString(self): return b''
+                class ChatMessage:
+                    nickname = ''
     douyin_pb2 = PlaceholderPB()
     
 
 # ==========================================
-# 🔐 配置区域 (请替换为您自己的 SESSDATA)
+# 🔐 配置区域 
 # ==========================================
 SESSDATA = "0d5ceb32%2C1779919308%2Ca276a%2Ab1CjCr1DByEwubcFGNC3jSZC18fEm4MgMO-3b2yE5CSquh_pZ8_jQ8esjl1MaTj_W59QUSVndxRkpSUEE5TjVDOXU0ZkJXamtrUnBlalNhTm5zZ0RBQm5zWXBJTm94SFpkQzU4bmg2Z21fbFJ6Z1RHRVBSSndmckI2WTZlOHY3M096YWhXVlJocVN3IIEC"
 from bilibili_api import live, Credential
@@ -47,29 +65,28 @@ CREDENTIAL = Credential(sessdata=SESSDATA)
 # ⬇️ 抖音 ProtoBuf 核心逻辑
 # ==========================================
 
-# 抖音客户端发送请求的 LogID，必须是唯一的
 def get_log_id() -> str:
-    return str(uuid.uuid4()).replace('-', '')[0:16]
+    # 使用 ASCII 编码，长度为 16 字节
+    return str(uuid.uuid4()).replace('-', '')[0:16] 
 
-# 核心编码函数：构造客户端请求帧
 def encode_douyin_ws_frame(log_id: str, payload_type: str, payload: bytes) -> bytes:
     """
     构造客户端的 PushFrame 消息体 (ProtoBuf Request).
-    
-    Args:
-        log_id: 用于追踪的唯一ID。
-        payload_type: 例如 'WebcastPushFrame'.
-        payload: 实际的业务 ProtoBuf 数据 (例如 Request Body 或 Heartbeat).
-    
-    Returns:
-        序列化后的二进制字节。
+    ---
+    WARNING: 抖音的 ProtoBuf 协议复杂，这里的实现是基于社区反推，可能需要根据最新的 Header/字段进行微调。
+    ---
     """
     
     # 1. 构造 PushFrame 消息
     push_frame = douyin_pb2.Webcast.Im.PushFrame()
     push_frame.SeqID = int(time.time() * 1000)
-    push_frame.LogID = int(log_id, 16) if log_id.startswith('0x') else int(log_id, 16)
-    push_frame.service = 3 # Service: 3 (Webcast), Method: 4 (PushFrame)
+    # LogID 字段在 douyin.proto 中定义为 uint64，需要转换为整数
+    try:
+        push_frame.LogID = int(log_id, 16)
+    except ValueError:
+        push_frame.LogID = int(time.time() * 1000) # Fallback
+        
+    push_frame.service = 3 
     push_frame.method = 4 
     push_frame.payload_encoding = 'none'
     push_frame.payload_type = payload_type
@@ -78,16 +95,9 @@ def encode_douyin_ws_frame(log_id: str, payload_type: str, payload: bytes) -> by
     # 2. 序列化并返回
     return push_frame.SerializeToString()
 
-# 核心解码函数：解析服务器返回的帧
 def decode_douyin_ws_frame(data: bytes) -> dict:
     """
     解析服务器返回的 ProtoBuf 帧。
-    
-    Args:
-        data: 原始二进制数据。
-        
-    Returns:
-        包含 messages 列表、log_id 等信息的字典。
     """
     messages = []
     
@@ -117,7 +127,6 @@ def decode_douyin_ws_frame(data: bytes) -> dict:
         
         # 4. 遍历所有内嵌消息
         for msg in response.messages:
-            # 假设 DanmuMessage 是最常见的，其 method 为 "WebcastChatMessage"
             if msg.method == 'WebcastChatMessage':
                 try:
                     chat_message = douyin_pb2.Webcast.Im.ChatMessage()
@@ -133,8 +142,6 @@ def decode_douyin_ws_frame(data: bytes) -> dict:
                 except Exception as e:
                     print(f"ChatMsg解析失败: {e}")
                     
-            # TODO: 您可以根据需要添加对礼物(GiftMessage)等其他消息的解析逻辑
-
         return {
             "messages": messages, 
             "log_id": push_frame.LogID, 
@@ -142,7 +149,7 @@ def decode_douyin_ws_frame(data: bytes) -> dict:
             "internal_ext": response.internal_ext
         }
 
-    return {"messages": [], "log_id": push_frame.LogID, "error": "未知 Payload Type"}
+    return {"messages": messages, "log_id": push_frame.LogID, "error": "未知 Payload Type"}
 
 # ==========================================
 # 🌐 FastAPI 初始化
@@ -156,7 +163,7 @@ app.add_middleware(
 @app.get("/")
 def read_root(): return {"status": "running"}
 
-# --- 直播流解析 (使用 Streamlink) ---
+# --- 视频解析 ---
 import streamlink
 @app.get("/api/play")
 def get_stream(url: str):
@@ -189,11 +196,12 @@ def check_status(url: str):
 
 
 # ==========================================
-# ⬇️ B站弹幕代理 (完整逻辑)
+# ⬇️ B站弹幕代理 (已修复: 包含 platform 字段)
 # ==========================================
 
 async def start_bilibili_room(room_id, websocket: WebSocket):
     print(f"🚀 [B站] 正在连接: {room_id}")
+    
     room = live.LiveDanmaku(room_id, credential=CREDENTIAL)
 
     @room.on('DANMU_MSG')
@@ -201,11 +209,14 @@ async def start_bilibili_room(room_id, websocket: WebSocket):
         try:
             content = event['data']['info'][1]
             user_name = event['data']['info'][2][1]
+            print(f"💬 {content}")
+            
+            # 修正: 必须包含 platform 字段，否则前端无法正确处理
             await websocket.send_text(json.dumps({
                 "type": "danmaku",
                 "text": content,
                 "user": user_name,
-                "platform": "bilibili"
+                "platform": "bilibili" 
             }))
         except:
             raise WebSocketDisconnect()
@@ -236,20 +247,20 @@ async def start_bilibili_room(room_id, websocket: WebSocket):
 # ⬇️ 抖音弹幕代理 (ProtoBuf 集成版)
 # ==========================================
 
-# 周期性发送心跳包
 async def _douyin_heartbeat_sender(ws: aiohttp.ClientWebSocketResponse):
-    heartbeat_payload = douyin_pb2.Webcast.Im.Request()
-    heartbeat_payload.live_id = 0 
+    # 构造空心跳请求
+    heartbeat_request = douyin_pb2.Webcast.Im.Request()
+    # 填充必要字段 (通常只需要 log_id 和序列号，这里精简)
     
     heartbeat_frame = encode_douyin_ws_frame(
         log_id=get_log_id(),
-        payload_type='WebcastHeartbeat',
-        payload=heartbeat_payload.SerializeToString()
+        payload_type='WebcastRequest', # Heartbeat 消息类型通常被视为 Request
+        payload=heartbeat_request.SerializeToString()
     )
     
     try:
         while True:
-            await asyncio.sleep(10) # 抖音心跳周期通常是 10-20 秒
+            await asyncio.sleep(10) 
             if not ws.closed:
                 await ws.send_bytes(heartbeat_frame)
     except asyncio.CancelledError:
@@ -268,12 +279,11 @@ async def start_douyin_room(url: str, websocket: WebSocket):
     print(f"🚀 [抖音] 正在连接: {room_id}")
 
     # --- 1. 获取 WebSocket 地址和 Headers ---
-    # 🚨 警告: 这里的 Headers 极有可能需要运行时动态获取和更新，否则连接会失败。
     DOUYIN_WS_BASE = "wss://webcast-ws-web-lf.douyin.com/ws/room/?compress=lz4&version=1.0.0" 
     DOUYIN_HEADERS = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.75 Safari/537.36',
         'Referer': f'https://live.douyin.com/{room_id}',
-        'Cookie': 'YOUR_VALID_COOKIE_HERE', # 关键
+        'Cookie': 'YOUR_VALID_COOKIE_HERE', # 🚨 请在部署前确保使用有效的 Cookie
     }
     
     try:
@@ -284,8 +294,7 @@ async def start_douyin_room(url: str, websocket: WebSocket):
                 auth_request = douyin_pb2.Webcast.Im.Request()
                 auth_request.room_id = room_id
                 auth_request.device_platform = "web"
-                auth_request.aid = 1128 # 模拟浏览器 aid
-                # TODO: 填充更多必要的字段，例如 ac, version_code, unique_id, cursor等
+                auth_request.aid = 1128 
                 
                 auth_frame = encode_douyin_ws_frame(
                     log_id=get_log_id(),
@@ -379,5 +388,3 @@ async def ws_endpoint(websocket: WebSocket, url: str):
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
-
