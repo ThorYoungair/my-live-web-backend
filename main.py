@@ -16,11 +16,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # ⚠️ 导入 ProtoBuf 模块 (占位符，假设已生成 douyin_pb2.py)
 try:
-    # 您的 douyin_pb2 模块
     import douyin_pb2 
 except ImportError:
     print("❌ douyin_pb2.py 未找到，抖音弹幕功能将无法工作。")
     class PlaceholderPB:
+        # 定义必要的占位类和方法，以防 main.py 启动时失败
         class Request:
             def SerializeToString(self): return b''
         class Response:
@@ -63,6 +63,7 @@ SESSDATA = "0d5ceb32%2C1779919308%2Ca276a%2Ab1CjCr1DByEwubcFGNC3jSZC18fEm4MgMO-3
 from bilibili_api import live, Credential
 CREDENTIAL = Credential(sessdata=SESSDATA)
 
+
 # ==========================================
 # ⬇️ 抖音 ProtoBuf 核心逻辑辅助函数 (仅占位)
 # ==========================================
@@ -70,6 +71,7 @@ def get_log_id() -> str:
     return str(uuid.uuid4()).replace('-', '')[0:16] 
 
 def encode_douyin_ws_frame(log_id: str, payload_type: str, payload: bytes) -> bytes:
+    # 占位函数，需要 douyin_pb2 才能实现
     push_frame = douyin_pb2.Webcast.Im.PushFrame()
     push_frame.SeqID = int(time.time() * 1000)
     try: push_frame.LogID = int(log_id, 16)
@@ -82,6 +84,7 @@ def encode_douyin_ws_frame(log_id: str, payload_type: str, payload: bytes) -> by
     return push_frame.SerializeToString()
 
 def decode_douyin_ws_frame(data: bytes) -> dict:
+    # 占位函数，需要 douyin_pb2 才能实现
     push_frame = douyin_pb2.Webcast.Im.PushFrame()
     try:
         push_frame.ParseFromString(data)
@@ -108,14 +111,14 @@ app.add_middleware(
 @app.get("/")
 def read_root(): return {"status": "running"}
 
-# --- 视频解析 (已替换为您提供的代码) ---
+# --- 视频解析 (已恢复为用户提供的原逻辑) ---
 import streamlink
 @app.get("/api/play")
 def get_stream(url: str):
     try:
         clean_url = url.split('?')[0]
         session = streamlink.Streamlink()
-        # Streamlink 使用 SESSDATA 解决 B站的登录限制 (用户原逻辑)
+        # 恢复为用户提供的原逻辑，保证本地测试和 B站视频的兼容性
         session.set_option("http-headers", {'Cookie': f'SESSDATA={SESSDATA}'})
         streams = session.streams(clean_url)
         if not streams: return {"status": "error", "message": "未找到流"}
@@ -123,7 +126,6 @@ def get_stream(url: str):
         quality_map = {}
         for q, s in streams.items():
             try:
-                # 尝试获取 Streamlink 解析出的真实 URL (用户原逻辑)
                 if hasattr(s, 'url'): quality_map[q] = s.url
                 elif hasattr(s, 'to_url'): quality_map[q] = s.to_url()
             except: continue
@@ -137,9 +139,8 @@ def check_status(url: str):
     try: 
         clean_url = url.split('?')[0]
         session = streamlink.Streamlink()
-        # Streamlink 使用 SESSDATA 解决 B站的登录限制 (用户原逻辑)
+        # 恢复为用户提供的原逻辑
         session.set_option("http-headers", {'Cookie': f'SESSDATA={SESSDATA}'})
-        # 尝试获取 streams 列表，如果能获取到则认为开播 (用户原逻辑)
         return {"is_live": bool(session.streams(clean_url))}
     except: return {"is_live": False}
 
@@ -159,12 +160,12 @@ async def start_bilibili_room(room_id, websocket: WebSocket):
             content = event['data']['info'][1]
             print(f"💬 {content}")
             
-            # ✅ 最终修正: 仅转发内容 (text)，保留 user 键(空)和 platform 键
+            # ✅ 最终修正: 转发内容只包含 text，将 user 设为空字符串以保留键名和兼容性
             await websocket.send_text(json.dumps({
                 "type": "danmaku",
                 "text": content,
-                "user": "", # 保持 user 键的兼容性
-                "platform": "bilibili" 
+                "user": "", # 保证前端弹幕库的兼容性 (不显示用户名)
+                "platform": "bilibili" # 保持架构兼容性
             }))
         except:
             raise WebSocketDisconnect()
